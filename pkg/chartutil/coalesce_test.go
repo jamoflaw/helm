@@ -79,6 +79,19 @@ func TestCoalesceValues(t *testing.T) {
 			"right":    "exists",
 			"scope":    "moby",
 			"top":      "nope",
+
+			// Replicate the behaviour of ProcessDependencies here and include a subchart value which should be
+			// removed via null key deletion in the parent chart
+			"pequod":   map[string]interface{}{
+				"ahab":     map[string]interface{}{
+					"scope": "ahab",
+					"nested": map[string]interface{}{
+						"foo": true,
+						"bar": true,
+					},
+				},
+			},
+			
 			"global": map[string]interface{}{
 				"nested2": map[string]interface{}{"l0": "moby"},
 			},
