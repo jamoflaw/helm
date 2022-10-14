@@ -62,8 +62,31 @@ type printFn func(format string, v ...interface{})
 //
 // This is a helper function for CoalesceValues.
 func coalesce(printf printFn, ch *chart.Chart, dest map[string]interface{}, prefix string) (map[string]interface{}, error) {
-	coalesceValues(printf, ch, dest, prefix)
-	return coalesceDeps(printf, ch, dest, prefix)
+	// Coalesce the values but delay removing nil values
+	coalesceValues(printf, ch, dest, prefix, false)
+
+	// Process the subcharts
+	destVals, err := coalesceDeps(printf, ch, dest, prefix)
+	if err != nil {
+		return dest, err
+	}
+
+	// Remove nil values from the values after we have processed all subcharts
+	return removeNilKeys(printf, destVals), nil
+}
+
+func removeNilKeys(printf printFn, dest map[string]interface{}) map[string]interface{} {
+	for key, val := range dest {
+		if val == nil {
+			// Iterate over the values and remove nil keys
+			delete(dest, key)
+		} else if istable(val) {
+			// Recursively call into ourselves to remove keys from inner tables
+			val = removeNilKeys(printf, val.(map[string]interface{}))
+		}
+	}
+
+	return dest
 }
 
 // coalesceDeps coalesces the dependencies of the given chart.
@@ -130,7 +153,7 @@ func coalesceGlobals(printf printFn, dest, src map[string]interface{}, prefix st
 					// Basically, we reverse order of coalesce here to merge
 					// top-down.
 					subPrefix := concatPrefix(prefix, key)
-					coalesceTablesFullKey(printf, vv, destvmap, subPrefix)
+					coalesceTablesFullKey(printf, vv, destvmap, subPrefix, true)
 					dg[key] = vv
 				}
 			}
@@ -156,7 +179,7 @@ func copyMap(src map[string]interface{}) map[string]interface{} {
 // coalesceValues builds up a values map for a particular chart.
 //
 // Values in v will override the values in the chart.
-func coalesceValues(printf printFn, c *chart.Chart, v map[string]interface{}, prefix string) {
+func coalesceValues(printf printFn, c *chart.Chart, v map[string]interface{}, prefix string, deleteNil bool) {
 	subPrefix := concatPrefix(prefix, c.Metadata.Name)
 	for key, val := range c.Values {
 		if value, ok := v[key]; ok {
@@ -164,7 +187,9 @@ func coalesceValues(printf printFn, c *chart.Chart, v map[string]interface{}, pr
 				// When the YAML value is null, we remove the value's key.
 				// This allows Helm's various sources of values (value files or --set) to
 				// remove incompatible keys from any previous chart, file, or set values.
-				delete(v, key)
+				if deleteNil {
+					delete(v, key)
+				}
 			} else if dest, ok := value.(map[string]interface{}); ok {
 				// if v[key] is a table, merge nv's val table into v[key].
 				src, ok := val.(map[string]interface{})
@@ -177,7 +202,7 @@ func coalesceValues(printf printFn, c *chart.Chart, v map[string]interface{}, pr
 				} else {
 					// Because v has higher precedence than nv, dest values override src
 					// values.
-					coalesceTablesFullKey(printf, dest, src, concatPrefix(subPrefix, key))
+					coalesceTablesFullKey(printf, dest, src, concatPrefix(subPrefix, key), deleteNil)
 				}
 			}
 		} else {
@@ -191,13 +216,13 @@ func coalesceValues(printf printFn, c *chart.Chart, v map[string]interface{}, pr
 //
 // dest is considered authoritative.
 func CoalesceTables(dst, src map[string]interface{}) map[string]interface{} {
-	return coalesceTablesFullKey(log.Printf, dst, src, "")
+	return coalesceTablesFullKey(log.Printf, dst, src, "", true)
 }
 
 // coalesceTablesFullKey merges a source map into a destination map.
 //
 // dest is considered authoritative.
-func coalesceTablesFullKey(printf printFn, dst, src map[string]interface{}, prefix string) map[string]interface{} {
+func coalesceTablesFullKey(printf printFn, dst, src map[string]interface{}, prefix string, deleteNil bool) map[string]interface{} {
 	// When --reuse-values is set but there are no modifications yet, return new values
 	if src == nil {
 		return dst
@@ -210,12 +235,14 @@ func coalesceTablesFullKey(printf printFn, dst, src map[string]interface{}, pref
 	for key, val := range src {
 		fullkey := concatPrefix(prefix, key)
 		if dv, ok := dst[key]; ok && dv == nil {
-			delete(dst, key)
+			if deleteNil {
+				delete(dst, key)
+			}
 		} else if !ok {
 			dst[key] = val
 		} else if istable(val) {
 			if istable(dv) {
-				coalesceTablesFullKey(printf, dv.(map[string]interface{}), val.(map[string]interface{}), fullkey)
+				coalesceTablesFullKey(printf, dv.(map[string]interface{}), val.(map[string]interface{}), fullkey, deleteNil)
 			} else {
 				printf("warning: cannot overwrite table with non table for %s (%v)", fullkey, val)
 			}
