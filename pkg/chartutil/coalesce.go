@@ -82,7 +82,7 @@ func removeNilKeys(printf printFn, dest map[string]interface{}) map[string]inter
 			delete(dest, key)
 		} else if istable(val) {
 			// Recursively call into ourselves to remove keys from inner tables
-			val = removeNilKeys(printf, val.(map[string]interface{}))
+			dest[key] = removeNilKeys(printf, val.(map[string]interface{}))
 		}
 	}
 
