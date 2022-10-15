@@ -85,7 +85,7 @@ func CoalesceValuesAndTrimNil(chrt *chart.Chart, vals map[string]interface{}) (V
 
 // CoalesceValues
 //
-// For backward compatibility, this calls into the renamed funciton CoalesceValuesAndTrimNil
+// For backward compatibility, this calls into the renamed function CoalesceValuesAndTrimNil
 //   replicating the original behaviour of CoalesceValues
 func CoalesceValues(chrt *chart.Chart, vals map[string]interface{}) (Values, error) {
 	return CoalesceValuesAndTrimNil(chrt, vals)
@@ -272,7 +272,7 @@ func CoalesceTablesAndTrimNil(dst, src map[string]interface{}) map[string]interf
 // CoalesceTables merges a source map into a destination map.
 //
 // dest is considered authoritative.
-// For backward compatibility, this calls into the renamed funciton CoalesceTablesAndTrimNil
+// For backward compatibility, this calls into the renamed function CoalesceTablesAndTrimNil
 func CoalesceTables(dst, src map[string]interface{}) map[string]interface{} {
 	return CoalesceTablesAndTrimNil(dst, src)
 }
