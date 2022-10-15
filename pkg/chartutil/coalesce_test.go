@@ -56,6 +56,7 @@ pequod:
     nested:
       foo: true
       bar: null
+      # the key parentOverrideTest should not appear here!
 `)
 
 func withDeps(c *chart.Chart, deps ...*chart.Chart) *chart.Chart {
@@ -63,9 +64,7 @@ func withDeps(c *chart.Chart, deps ...*chart.Chart) *chart.Chart {
 	return c
 }
 
-func TestCoalesceValues(t *testing.T) {
-	is := assert.New(t)
-
+func getTestChartWithSubcharts() *chart.Chart {
 	c := withDeps(&chart.Chart{
 		Metadata: &chart.Metadata{Name: "moby"},
 		Values: map[string]interface{}{
@@ -88,6 +87,9 @@ func TestCoalesceValues(t *testing.T) {
 					"nested": map[string]interface{}{
 						"foo": true,
 						"bar": true,
+
+						// Test removal when specifying a nil key in a parent chart and not and overrides file
+						"parentOverrideTest": nil,
 					},
 				},
 			},
@@ -117,7 +119,7 @@ func TestCoalesceValues(t *testing.T) {
 					"scope":  "ahab",
 					"name":   "ahab",
 					"boat":   true,
-					"nested": map[string]interface{}{"foo": false, "bar": true},
+					"nested": map[string]interface{}{"foo": false, "bar": true, "parentOverrideTest": true},
 				},
 			},
 		),
@@ -132,6 +134,14 @@ func TestCoalesceValues(t *testing.T) {
 		},
 	)
 
+	return c
+}
+
+func TestCoalesceValuesAndKeepNil(t *testing.T) {
+	is := assert.New(t)
+
+	c := getTestChartWithSubcharts()
+
 	vals, err := ReadValues(testCoalesceValuesYaml)
 	if err != nil {
 		t.Fatal(err)
@@ -145,7 +155,110 @@ func TestCoalesceValues(t *testing.T) {
 		valsCopy[key] = value
 	}
 
-	v, err := CoalesceValues(c, vals)
+	v, err := CoalesceValuesAndKeepNil(c, vals)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j, _ := json.MarshalIndent(v, "", "  ")
+	t.Logf("Coalesced Values: %s", string(j))
+
+	tests := []struct {
+		tpl    string
+		expect string
+	}{
+		{"{{.top}}", "yup"},
+		{"{{.back}}", ""},
+		{"{{.name}}", "moby"},
+		{"{{.global.name}}", "Ishmael"},
+		{"{{.global.subject}}", "Queequeg"},
+		{"{{.global.harpooner}}", "<no value>"},
+		{"{{.pequod.name}}", "pequod"},
+		{"{{.pequod.ahab.name}}", "ahab"},
+		{"{{.pequod.ahab.scope}}", "whale"},
+		{"{{.pequod.ahab.nested.foo}}", "true"},
+		{"{{.pequod.ahab.global.name}}", "Ishmael"},
+		{"{{.pequod.ahab.global.nested.foo}}", "bar"},
+		{"{{.pequod.ahab.global.subject}}", "Queequeg"},
+		{"{{.pequod.ahab.global.harpooner}}", "Tashtego"},
+		{"{{.pequod.global.name}}", "Ishmael"},
+		{"{{.pequod.global.nested.foo}}", "<no value>"},
+		{"{{.pequod.global.subject}}", "Queequeg"},
+		{"{{.spouter.global.name}}", "Ishmael"},
+		{"{{.spouter.global.harpooner}}", "<no value>"},
+
+		{"{{.global.nested.boat}}", "true"},
+		{"{{.pequod.global.nested.boat}}", "true"},
+		{"{{.spouter.global.nested.boat}}", "true"},
+		{"{{.pequod.global.nested.sail}}", "true"},
+		{"{{.spouter.global.nested.sail}}", "<no value>"},
+
+		{"{{.global.nested2.l0}}", "moby"},
+		{"{{.global.nested2.l1}}", "<no value>"},
+		{"{{.global.nested2.l2}}", "<no value>"},
+		{"{{.pequod.global.nested2.l0}}", "moby"},
+		{"{{.pequod.global.nested2.l1}}", "pequod"},
+		{"{{.pequod.global.nested2.l2}}", "<no value>"},
+		{"{{.pequod.ahab.global.nested2.l0}}", "moby"},
+		{"{{.pequod.ahab.global.nested2.l1}}", "pequod"},
+		{"{{.pequod.ahab.global.nested2.l2}}", "ahab"},
+		{"{{.spouter.global.nested2.l0}}", "moby"},
+		{"{{.spouter.global.nested2.l1}}", "spouter"},
+		{"{{.spouter.global.nested2.l2}}", "<no value>"},
+	}
+
+	for _, tt := range tests {
+		if o, err := ttpl(tt.tpl, v); err != nil || o != tt.expect {
+			t.Errorf("Expected %q to expand to %q, got %q", tt.tpl, tt.expect, o)
+		}
+	}
+
+	nullKeys := []string{"bottom", "right", "left", "front"}
+	for _, nullKey := range nullKeys {
+		if v[nullKey] != nil {
+			t.Errorf("Expected key %q to be null", nullKey)
+		}
+	}
+
+	if v["nested"].(map[string]interface{})["boat"] != nil {
+		t.Errorf("Expected key nested.boat to be null")
+	}
+
+	nestedChart := v["pequod"].(map[string]interface{})["ahab"].(map[string]interface{})
+	if nestedChart["boat"] != nil {
+		t.Errorf("Expected key pequod.ahab.boat to be null")
+	}
+
+	if nestedChart["nested"].(map[string]interface{})["bar"] != nil {
+		t.Errorf("Expected key pequod.ahab.nested.bar to be null")
+	}
+
+	if nestedChart["nested"].(map[string]interface{})["parentOverrideTest"] != nil {
+		t.Errorf("Expected key pequod.ahab.nested.parentOverrideTest to be null")
+	}
+
+	// CoalesceValues should not mutate the passed arguments
+	is.Equal(valsCopy, vals)
+}
+
+func TestCoalesceValuesAndTrimNil(t *testing.T) {
+	is := assert.New(t)
+
+	c := getTestChartWithSubcharts()
+
+	vals, err := ReadValues(testCoalesceValuesYaml)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// taking a copy of the values before passing it
+	// to CoalesceValues as argument, so that we can
+	// use it for asserting later
+	valsCopy := make(Values, len(vals))
+	for key, value := range vals {
+		valsCopy[key] = value
+	}
+
+	v, err := CoalesceValuesAndTrimNil(c, vals)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,6 +335,10 @@ func TestCoalesceValues(t *testing.T) {
 		t.Error("Expected subchart nested bar key to be removed, still present")
 	}
 
+	if _, ok := subchart["nested"].(map[string]interface{})["parentOverrideTest"]; ok {
+		t.Error("Expected subchart nested test key to be removed, still present")
+	}
+
 	// CoalesceValues should not mutate the passed arguments
 	is.Equal(valsCopy, vals)
 }
@@ -256,7 +373,7 @@ func TestCoalesceTables(t *testing.T) {
 
 	// What we expect is that anything in dst overrides anything in src, but that
 	// otherwise the values are coalesced.
-	CoalesceTables(dst, src)
+	CoalesceTablesAndTrimNil(dst, src)
 
 	if dst["name"] != "Ishmael" {
 		t.Errorf("Unexpected name: %s", dst["name"])
@@ -316,7 +433,7 @@ func TestCoalesceTables(t *testing.T) {
 
 	// What we expect is that anything in dst should have all values set,
 	// this happens when the --reuse-values flag is set but the chart has no modifications yet
-	CoalesceTables(dst2, nil)
+	CoalesceTablesAndTrimNil(dst2, nil)
 
 	if dst2["name"] != "Ishmael" {
 		t.Errorf("Unexpected name: %s", dst2["name"])
@@ -404,7 +521,7 @@ func TestCoalesceValuesWarnings(t *testing.T) {
 		warnings = append(warnings, fmt.Sprintf(format, v...))
 	}
 
-	_, err := coalesce(printf, c, vals, "")
+	_, err := coalesce(printf, c, vals, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}

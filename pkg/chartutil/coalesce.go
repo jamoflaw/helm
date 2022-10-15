@@ -33,7 +33,7 @@ func concatPrefix(a, b string) string {
 	return fmt.Sprintf("%s.%s", a, b)
 }
 
-// CoalesceValues coalesces all of the values in a chart (and its subcharts).
+// CoalesceValuesAndKeepNil coalesces all of the values in a chart (and its subcharts).
 //
 // Values are coalesced together using the following rules:
 //
@@ -42,7 +42,8 @@ func concatPrefix(a, b string) string {
 //	- Scalar values and arrays are replaced, maps are merged
 //	- A chart has access to all of the variables for it, as well as all of
 //		the values destined for its dependencies.
-func CoalesceValues(chrt *chart.Chart, vals map[string]interface{}) (Values, error) {
+//	  Nil values are not removed and are left in place
+func CoalesceValuesAndKeepNil(chrt *chart.Chart, vals map[string]interface{}) (Values, error) {
 	v, err := copystructure.Copy(vals)
 	if err != nil {
 		return vals, err
@@ -53,7 +54,41 @@ func CoalesceValues(chrt *chart.Chart, vals map[string]interface{}) (Values, err
 	if valsCopy == nil {
 		valsCopy = make(map[string]interface{})
 	}
-	return coalesce(log.Printf, chrt, valsCopy, "")
+	// Coalesce but do not delete nil values
+	return coalesce(log.Printf, chrt, valsCopy, "", false)
+}
+
+// CoalesceValuesAndTrimNil coalesces all of the values in a chart (and its subcharts).
+//
+// Values are coalesced together using the following rules:
+//
+//	- Values in a higher level chart always override values in a lower-level
+//		dependency chart
+//	- Scalar values and arrays are replaced, maps are merged
+//	- A chart has access to all of the variables for it, as well as all of
+//		the values destined for its dependencies.
+//	  Nil values are removed
+func CoalesceValuesAndTrimNil(chrt *chart.Chart, vals map[string]interface{}) (Values, error) {
+	v, err := copystructure.Copy(vals)
+	if err != nil {
+		return vals, err
+	}
+
+	valsCopy := v.(map[string]interface{})
+	// if we have an empty map, make sure it is initialized
+	if valsCopy == nil {
+		valsCopy = make(map[string]interface{})
+	}
+	// Coalesce but do not delete nil values
+	return coalesce(log.Printf, chrt, valsCopy, "", true)
+}
+
+// CoalesceValues
+//
+// For backward compatability, this calls into the renamed funciton CoalesceValuesAndTrimNil
+//   replicating the original behaviour of CoalesceValues
+func CoalesceValues(chrt *chart.Chart, vals map[string]interface{}) (Values, error) {
+	return CoalesceValuesAndTrimNil(chrt, vals)
 }
 
 type printFn func(format string, v ...interface{})
@@ -61,36 +96,44 @@ type printFn func(format string, v ...interface{})
 // coalesce coalesces the dest values and the chart values, giving priority to the dest values.
 //
 // This is a helper function for CoalesceValues.
-func coalesce(printf printFn, ch *chart.Chart, dest map[string]interface{}, prefix string) (map[string]interface{}, error) {
+func coalesce(printf printFn, ch *chart.Chart, dest map[string]interface{}, prefix string, deleteNil bool) (map[string]interface{}, error) {
 	// Coalesce the values but delay removing nil values
 	coalesceValues(printf, ch, dest, prefix, false)
 
 	// Process the subcharts
-	destVals, err := coalesceDeps(printf, ch, dest, prefix)
+	destVals, err := coalesceDeps(printf, ch, dest, prefix, false)
 	if err != nil {
 		return dest, err
 	}
 
+	if deleteNil {
+		destVals = removeNilKeys(destVals)
+	}
 	// Remove nil values from the values after we have processed all subcharts
-	return removeNilKeys(printf, destVals), nil
+	return destVals, nil
 }
 
-func removeNilKeys(printf printFn, dest map[string]interface{}) map[string]interface{} {
-	for key, val := range dest {
+func removeNilKeys(dest map[string]interface{}) map[string]interface{} {
+	destCopy, err := copystructure.Copy(dest)
+	if err != nil {
+		return dest
+	}
+	destCopyMap := destCopy.(map[string]interface{})
+	for key, val := range destCopyMap {
 		if val == nil {
 			// Iterate over the values and remove nil keys
-			delete(dest, key)
+			delete(destCopyMap, key)
 		} else if istable(val) {
 			// Recursively call into ourselves to remove keys from inner tables
-			dest[key] = removeNilKeys(printf, val.(map[string]interface{}))
+			destCopyMap[key] = removeNilKeys(val.(map[string]interface{}))
 		}
 	}
 
-	return dest
+	return destCopyMap
 }
 
 // coalesceDeps coalesces the dependencies of the given chart.
-func coalesceDeps(printf printFn, chrt *chart.Chart, dest map[string]interface{}, prefix string) (map[string]interface{}, error) {
+func coalesceDeps(printf printFn, chrt *chart.Chart, dest map[string]interface{}, prefix string, deleteNil bool) (map[string]interface{}, error) {
 	for _, subchart := range chrt.Dependencies() {
 		if c, ok := dest[subchart.Name()]; !ok {
 			// If dest doesn't already have the key, create it.
@@ -103,11 +146,11 @@ func coalesceDeps(printf printFn, chrt *chart.Chart, dest map[string]interface{}
 			subPrefix := concatPrefix(prefix, chrt.Metadata.Name)
 
 			// Get globals out of dest and merge them into dvmap.
-			coalesceGlobals(printf, dvmap, dest, subPrefix)
+			coalesceGlobals(printf, dvmap, dest, subPrefix, deleteNil)
 
 			// Now coalesce the rest of the values.
 			var err error
-			dest[subchart.Name()], err = coalesce(printf, subchart, dvmap, subPrefix)
+			dest[subchart.Name()], err = coalesce(printf, subchart, dvmap, subPrefix, deleteNil)
 			if err != nil {
 				return dest, err
 			}
@@ -119,7 +162,7 @@ func coalesceDeps(printf printFn, chrt *chart.Chart, dest map[string]interface{}
 // coalesceGlobals copies the globals out of src and merges them into dest.
 //
 // For convenience, returns dest.
-func coalesceGlobals(printf printFn, dest, src map[string]interface{}, prefix string) {
+func coalesceGlobals(printf printFn, dest, src map[string]interface{}, prefix string, deleteNil bool) {
 	var dg, sg map[string]interface{}
 
 	if destglob, ok := dest[GlobalKey]; !ok {
@@ -153,7 +196,7 @@ func coalesceGlobals(printf printFn, dest, src map[string]interface{}, prefix st
 					// Basically, we reverse order of coalesce here to merge
 					// top-down.
 					subPrefix := concatPrefix(prefix, key)
-					coalesceTablesFullKey(printf, vv, destvmap, subPrefix, true)
+					coalesceTablesFullKey(printf, vv, destvmap, subPrefix, deleteNil)
 					dg[key] = vv
 				}
 			}
@@ -212,11 +255,25 @@ func coalesceValues(printf printFn, c *chart.Chart, v map[string]interface{}, pr
 	}
 }
 
+// CoalesceTablesAndKeepNil merges a source map into a destination map.keeping nil values in place
+//
+// dest is considered authoritative.
+func CoalesceTablesAndKeepNil(dst, src map[string]interface{}) map[string]interface{} {
+	return coalesceTablesFullKey(log.Printf, dst, src, "", false)
+}
+
+// CoalesceTablesAndTrimNil merges a source map into a destination map.
+//
+// dest is considered authoritative.
+func CoalesceTablesAndTrimNil(dst, src map[string]interface{}) map[string]interface{} {
+	return coalesceTablesFullKey(log.Printf, dst, src, "", true)
+}
+
 // CoalesceTables merges a source map into a destination map.
 //
 // dest is considered authoritative.
 func CoalesceTables(dst, src map[string]interface{}) map[string]interface{} {
-	return coalesceTablesFullKey(log.Printf, dst, src, "", true)
+	return CoalesceTablesAndTrimNil(dst, src)
 }
 
 // coalesceTablesFullKey merges a source map into a destination map.

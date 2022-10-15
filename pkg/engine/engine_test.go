@@ -103,7 +103,7 @@ func TestRender(t *testing.T) {
 		},
 	}
 
-	v, err := chartutil.CoalesceValues(c, vals)
+	v, err := chartutil.CoalesceValuesAndTrimNil(c, vals)
 	if err != nil {
 		t.Fatalf("Failed to coalesce values: %s", err)
 	}
@@ -486,7 +486,7 @@ func TestRenderNestedValues(t *testing.T) {
 		},
 	}
 
-	tmp, err := chartutil.CoalesceValues(outer, injValues)
+	tmp, err := chartutil.CoalesceValuesAndKeepNil(outer, injValues)
 	if err != nil {
 		t.Fatalf("Failed to coalesce values: %s", err)
 	}
